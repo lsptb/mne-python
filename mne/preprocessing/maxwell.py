@@ -6,7 +6,7 @@
 
 from __future__ import division
 import numpy as np
-from scipy.linalg import pinv
+from scipy.linalg import pinv, svd, qr
 from math import factorial
 
 from ..forward._compute_forward import _concatenate_coils
@@ -17,7 +17,7 @@ from ..utils import verbose
 
 @verbose
 def maxwell_filter(raw, origin=(0, 0, 40), int_order=8, ext_order=3,
-                   verbose=None):
+                   tSSS_buffer=None, verbose=None):
     """Apply Maxwell filter to data using spherical harmonics.
 
     Parameters
@@ -31,6 +31,9 @@ def maxwell_filter(raw, origin=(0, 0, 40), int_order=8, ext_order=3,
         Order of internal component of spherical expansion
     ext_order : int
         Order of external component of spherical expansion
+    st_dur : float | None
+        If not None, apply spatiotemporal tSSS with specified buffer duration
+        (in seconds).
     verbose : bool, str, int, or None
         If not None, override default verbose level (see mne.verbose)
 
@@ -43,10 +46,11 @@ def maxwell_filter(raw, origin=(0, 0, 40), int_order=8, ext_order=3,
     -----
     .. versionadded:: 0.10
 
-    Equation numbers refer to Taulu and Kajola, 2005 [1]_.
+    Equation numbers refer to Taulu and Kajola, 2005 [1]_ unless otherwise
+    noted.
 
-    This code was adapted and relicensed (with BSD form) with permission from
-    Jussi Nurminen.
+    Some of this code was adapted and relicensed (with BSD form) with
+    permission from Jussi Nurminen.
 
     References
     ----------
@@ -55,6 +59,12 @@ def maxwell_filter(raw, origin=(0, 0, 40), int_order=8, ext_order=3,
            Journal of Applied Physics, vol. 97, pp. 124905 1-10, 2005.
 
            http://lib.tkk.fi/Diss/2008/isbn9789512295654/article2.pdf
+
+    .. [2] Taulu S. and Simola J. "Spatiotemporal signal space separation
+           method for rejecting nearby interference in MEG measurements,"
+           Physics in Medicine and Biology, vol. 51, pp. 1759-1768, 2006.
+
+           http://lib.tkk.fi/Diss/2008/isbn9789512295654/article3.pdf
     """
 
     # There are an absurd number of different possible notations for spherical
@@ -86,7 +96,7 @@ def maxwell_filter(raw, origin=(0, 0, 40), int_order=8, ext_order=3,
     coils = [all_coils[ci] for ci in picks]
     raw.preload_data()
 
-    data, _ = raw[picks, :]
+    data, times = raw[picks, :]
 
     # Magnetometers (with coil_class == 1.0) must be scaled by 100 to improve
     # numerical stability as they have different scales than gradiometers
@@ -102,6 +112,25 @@ def maxwell_filter(raw, origin=(0, 0, 40), int_order=8, ext_order=3,
     pS_tot = pinv(S_tot, cond=1e-15)
     # Compute multipolar moments of (magnetometer scaled) data (Eq. 37)
     mm = np.dot(pS_tot, data * coil_scale[:, np.newaxis])
+
+    if tSSS_buffer is not None:
+        # Generate time points to break up data
+        t_starts = raw.time_as_index(np.arange(times[0], times[-1],
+                                               tSSS_buffer))
+        t_ends = np.arange(times[0] + tSSS_buffer, times[-1], tSSS_buffer)
+        t_ends = raw.time_as_index(np.append(t_ends, times[-1]))
+
+        # Loop through buffer windows of data
+        for wind in zip(raw.time_as_index(t_starts),
+                        raw.time_as_index(t_ends)):
+
+            # Compute SSP-like projector
+            proj = _overlap_projector(mm[:S_in.shape[1], wind[0]:wind[1]],
+                                      mm[S_in.shape[1]:, wind[0]:wind[1]])
+
+            # Apply projector according to Eq. 12 in [2]_
+            corrected_data = np.dot(proj, mm[:S_in.shape[1], wind[0]:wind[1]])
+            mm[:S_in.shape[1], wind[0]:wind[1]] = corrected_data
     # Reconstruct data from internal space (Eq. 38)
     recon = np.dot(S_in, mm[:S_in.shape[1], :])
 
@@ -505,3 +534,36 @@ def _update_sss_info(raw, origin, int_order, ext_order, nsens):
         raw.info['proc_history'] = [proc_block]
 
     return raw
+
+
+def _overlap_projector(mat_1, mat_2, delta=0.02):
+    """Calculate projector for removal of subspace intersection in tSSS"""
+    # delta necessary to deal with noise when finding identical signal
+    # directions in the subspace. See the end of the Results section in [2]_
+
+    # TODO: Get comments on naming conventions from @staulu
+
+    # Compute SVD to get temporal bases. Matrices must have shape
+    # (n_samps x n_channels) when passed into svd computation
+    U_1, S_1, V_1 = svd(mat_1.T)
+    U_2, S_2, V_2 = svd(mat_2.T)
+
+    # Compute subspace intersection between temporal bases
+    # Q_1, Q_2 should have shape (n_time_pts x n_bases)
+    # R_1, R_2 should have shape (80 x 80)
+    Q_1, R_1 = qr(V_1.T)
+    Q_2, R_2 = qr(V_2.T)
+
+    # L_total should have shape (80 x 80)
+    L_total = np.dot(Q_1.T, Q_2)
+
+    # Compute angles between subspace and which bases to keep
+    _, S_intersect, V_intersect = svd(L_total)
+    retain_inds = S_intersect > (1 - delta)
+
+    # Compute projection operator as (I-LL_T) Eq. 12 in [2]_
+    # L_principal should be shape (n_time_pts x n_bases)
+    L_principal = np.dot(Q_2, V_intersect.T)[:, retain_inds]
+    proj = np.eye(len(L_principal)) - np.dot(L_principal, L_principal.T)
+
+    return proj
