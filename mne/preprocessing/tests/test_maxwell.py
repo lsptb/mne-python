@@ -25,6 +25,8 @@ sss_std_fname = op.join(data_path, 'SSS',
                         'test_move_anon_raw_simp_stdOrigin_sss.fif')
 sss_nonstd_fname = op.join(data_path, 'SSS',
                            'test_move_anon_raw_simp_nonStdOrigin_sss.fif')
+sss_spatiotemporal_fname = op.join(data_path, 'SSS',
+                                   'test_move_anon_raw_spatiotemporal_sss.fif')
 
 
 @testing.requires_testing_data
@@ -156,5 +158,38 @@ def test_maxwell_filter_additional():
 
     assert_equal(cov_raw_rank, raw.info['nchan'])
     assert_equal(cov_sss_rank, maxwell.get_num_moments(int_order, 0))
+
+
+@testing.requires_testing_data
+def test_spatiotemporal_maxwell():
+    """Test spatiotemporal (tSSS) processing"""
+    # Load raw testing data
+    with warnings.catch_warnings(record=True):  # maxshield
+        raw = Raw(raw_fname, preload=False, proj=False,
+                  allow_maxshield=True)
+    raw.preload_data()
+
+    with warnings.catch_warnings(record=True):  # maxshield, naming
+        tsss_bench = Raw(sss_std_fname, preload=True, proj=False,
+                         allow_maxshield=True)
+
+    # Create coils
+    all_coils, _, _, meg_info = _prep_meg_channels(raw.info, ignore_ref=True,
+                                                   elekta_defs=True)
+    picks = [raw.info['ch_names'].index(ch) for ch in [coil['chname']
+                                                       for coil in all_coils]]
+
+    # Test sss computation at the standard head origin
+    raw_tsss = maxwell.maxwell_filter(raw, st_dur=10.)
+
+    assert_array_almost_equal(raw_tsss._data, tsss_bench._data, decimal=11,
+                              err_msg='Spatiotemporal (tSSS) maxwell filtered '
+                              'data at standard origin incorrect.')
+
+    # Confirm SNR is above 1000
+    bench_rms = np.sqrt(np.mean(tsss_bench._data[picks, :] ** 2, axis=1))
+    error = raw_tsss._data[picks, :] - tsss_bench._data[picks, :]
+    error_rms = np.sqrt(np.mean(error ** 2, axis=1))
+    assert_true(np.mean(bench_rms / error_rms) >= 1000, 'SNR < 1000')
 
 run_tests_if_main()
