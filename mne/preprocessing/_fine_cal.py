@@ -32,7 +32,7 @@ def calculate_fine_calibration(raw, n_imbalance=3, t_window=10., n_jobs=1,
         imbalance components. Only used if gradiometers are present.
     t_window : float
         Time window to use for surface normal rotation in seconds.
-        Default is 2.
+        Default is 10.
     n_jobs : int | str
         Number of jobs to run in parallel. Can be 'cuda' if scikits.cuda
         is installed properly and CUDA is initialized. Currently this
@@ -142,9 +142,11 @@ def calculate_fine_calibration(raw, n_imbalance=3, t_window=10., n_jobs=1,
         imb = np.zeros((len(info['ch_names']), n_imbalance))
     # Put in appropriate structure
     assert len(np.intersect1d(mag_picks, grad_picks)) == 0
-    imb_cals = [cals[ii] if ii in mag_picks else imb[ii]
+    imb_cals = [np.array([cals[ii]]) if ii in mag_picks else imb[ii]
                 for ii in range(len(info['ch_names']))]
-    fine_cal = dict(ch_names=info['ch_names'], locs=locs, imb_cals=imb_cals)
+    ch_names = [ch_dict['logno'] for ch_dict in info['chs']]
+    fine_cal = dict(ch_names=ch_names, locs=locs, imb_cals=imb_cals)
+
     return fine_cal
 
 
@@ -388,4 +390,14 @@ def write_fine_calibration(fname, calibration):
     """
     _check_fname(fname, overwrite=True)
     check_fname(fname, 'cal', ('.dat',))
-    raise NotImplementedError
+
+    # TODO: Figure out if write or write+binary mode is best
+    with open(fname, 'w') as cal_file:
+        for ci, chan in enumerate(calibration['ch_names']):
+            cal_line = np.concatenate([calibration['locs'][ci],
+                                       calibration['imb_cals'][ci]]).round(6)
+            # Write string containing 1) channel, 2) loc info, 3) calib info
+            cal_str = str(chan) + ' ' + ' '.join(map(lambda x: "%.6f" % x,
+                                                     cal_line))
+
+            cal_file.write(cal_str + '\n')
