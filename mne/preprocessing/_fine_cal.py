@@ -391,13 +391,12 @@ def write_fine_calibration(fname, calibration):
     _check_fname(fname, overwrite=True)
     check_fname(fname, 'cal', ('.dat',))
 
-    # TODO: Figure out if write or write+binary mode is best
-    with open(fname, 'w') as cal_file:
+    with open(fname, 'wb') as cal_file:
         for ci, chan in enumerate(calibration['ch_names']):
+            # Write string containing 1) channel, 2) loc info, 3) calib info
             cal_line = np.concatenate([calibration['locs'][ci],
                                        calibration['imb_cals'][ci]]).round(6)
-            # Write string containing 1) channel, 2) loc info, 3) calib info
             cal_str = str(chan) + ' ' + ' '.join(map(lambda x: "%.6f" % x,
                                                      cal_line))
 
-            cal_file.write(cal_str + '\n')
+            cal_file.write((cal_str + '\n').encode('ASCII'))
